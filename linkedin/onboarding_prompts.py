@@ -40,7 +40,7 @@ LLM_PROVIDERS = [
 ]
 LLM_PROVIDER = Autocomplete(
     "llm_provider", "LLM provider",
-    resolver=lambda _: LLM_PROVIDERS, default="openai",
+    resolver=lambda _: LLM_PROVIDERS, default="google",
 )
 LLM_API_KEY = Password("llm_api_key", "LLM API key (e.g. sk-...)")
 AI_MODEL = Text("ai_model", "AI model (e.g. gpt-4o, claude-sonnet-4-5-20250929)")

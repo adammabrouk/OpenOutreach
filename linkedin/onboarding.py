@@ -80,7 +80,9 @@ def missing_keys() -> set[str]:
         keys |= _ACCOUNT_KEYS
 
     cfg = SiteConfig.load()
-    if not cfg.llm_provider:
+    # Also ask the provider when the key is unset: its SiteConfig default is
+    # non-empty, so `not cfg.llm_provider` alone would silently skip it.
+    if not cfg.llm_provider or not cfg.llm_api_key:
         keys.add("llm_provider")
     if not cfg.llm_api_key:
         keys.add("llm_api_key")
