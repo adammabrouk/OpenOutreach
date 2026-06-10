@@ -9,8 +9,8 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from django.utils import timezone
+from linkedin_cli.exceptions import AuthenticationError, CheckpointChallengeError
 from pydantic_ai.exceptions import ModelHTTPError
-
 from termcolor import colored
 
 from linkedin.conf import (
@@ -21,7 +21,6 @@ from linkedin.conf import (
     ENABLE_ACTIVE_HOURS,
 )
 from linkedin.diagnostics import failure_diagnostics
-from linkedin_cli.exceptions import AuthenticationError, CheckpointChallengeError
 from linkedin.ml.qualifier import BayesianQualifier, KitQualifier
 from linkedin.models import Task
 from linkedin.tasks.check_pending import handle_check_pending
@@ -37,7 +36,7 @@ _HANDLERS = {
 }
 
 HEARTBEAT_INTERVAL = 300  # 5 minutes
-HEARTBEAT_SLICE = 60      # wake every minute during long sleeps
+HEARTBEAT_SLICE = 60  # wake every minute during long sleeps
 
 
 # ── Cloud promo ──────────────────────────────────────────────────────
@@ -201,7 +200,10 @@ def _build_qualifiers(campaigns, cfg, kit_model=None):
                     colored("GP qualifier warm-started", "cyan")
                     + " on %d labelled samples (%d positive, %d negative)"
                     + " for campaign %s",
-                    len(y), int((y == 1).sum()), int((y == 0).sum()), campaign,
+                    len(y),
+                    int((y == 1).sum()),
+                    int((y == 0).sum()),
+                    campaign,
                 )
             qualifiers[campaign.pk] = q
             n_regular += 1
@@ -228,7 +230,9 @@ def seconds_until_active() -> float:
         return 0.0
 
     candidate = timezone.make_aware(
-        now.replace(hour=ACTIVE_START_HOUR, minute=0, second=0, microsecond=0, tzinfo=None),
+        now.replace(
+            hour=ACTIVE_START_HOUR, minute=0, second=0, microsecond=0, tzinfo=None
+        ),
         timezone=tz,
     )
     if candidate <= now:
@@ -251,7 +255,8 @@ def _exit_on_checkpoint(session, task, url: str) -> None:
     logger.error(
         colored(
             f"ACCOUNT CHECKPOINTED — {session.linkedin_profile.linkedin_username}",
-            "red", attrs=["bold"],
+            "red",
+            attrs=["bold"],
         )
     )
     logger.error("Clear the challenge in a real browser: %s", url)
@@ -267,26 +272,24 @@ def _exit_on_checkpoint(session, task, url: str) -> None:
 
 
 def run_daemon(session):
-    from linkedin.ml.hub import fetch_kit
-    from linkedin.setup.freemium import import_freemium_campaign
-    from linkedin.models import Campaign
+    from linkedin.models import Campaign, Task
 
     cfg = CAMPAIGN_CONFIG
 
-    # Load kit model for freemium campaigns
-    kit = fetch_kit()
-    if kit:
-        freemium_campaign = import_freemium_campaign(kit["config"])
-        if freemium_campaign:
-            prev_campaign = session.campaign
-            session.campaign = freemium_campaign
-            from linkedin.setup.freemium import seed_profiles
-            seed_profiles(session, kit["config"])
-            session.campaign = prev_campaign
-
-    qualifiers = _build_qualifiers(
-        session.campaigns, cfg, kit_model=kit["model"] if kit else None,
+    freemium_ids = list(
+        Campaign.objects.filter(is_freemium=True).values_list("pk", flat=True)
     )
+    if freemium_ids:
+        for cid in freemium_ids:
+            Task.objects.filter(payload__campaign_id=cid).delete()
+        Campaign.objects.filter(pk__in=freemium_ids).delete()
+        logger.info(
+            "Removed %d freemium campaign(s) and their deals/keywords/actions/tasks",
+            len(freemium_ids),
+        )
+        session.__dict__.pop("campaigns", None)
+
+    qualifiers = _build_qualifiers(session.campaigns, cfg)
 
     campaigns = session.campaigns
     if not campaigns:
@@ -311,7 +314,9 @@ def run_daemon(session):
             h, m = int(pause // 3600), int(pause % 3600 // 60)
             logger.info("Outside active hours — sleeping %dh%02dm", h, m)
             sleep_with_heartbeat(
-                pause, heartbeat, f"outside active hours, {h}h{m:02d}m left",
+                pause,
+                heartbeat,
+                f"outside active hours, {h}h{m:02d}m left",
             )
             rhythm.reset()
             continue
@@ -322,6 +327,7 @@ def run_daemon(session):
             # stuck without a pending task (e.g. because a prior handler
             # crashed) gets a fresh task here; this is the retry mechanism.
             from linkedin.tasks.scheduler import reconcile
+
             reconcile(session)
 
             wait = Task.objects.seconds_to_next()
@@ -334,7 +340,9 @@ def run_daemon(session):
                 h, m = int(wait // 3600), int(wait % 3600 // 60)
                 logger.info("Next task in %dh%02dm — sleeping", h, m)
                 sleep_with_heartbeat(
-                    wait, heartbeat, f"next task in {h}h{m:02d}m",
+                    wait,
+                    heartbeat,
+                    f"next task in {h}h{m:02d}m",
                 )
                 rhythm.reset()
             continue
@@ -375,7 +383,8 @@ def run_daemon(session):
             task.mark_failed()
             logger.error(
                 colored("Daemon stopped — LLM API error", "red", attrs=["bold"])
-                + "\n%s\nCheck llm_provider, ai_model, llm_api_key, and llm_api_base in Admin → Site Configuration.", e,
+                + "\n%s\nCheck llm_provider, ai_model, llm_api_key, and llm_api_base in Admin → Site Configuration.",
+                e,
             )
             return
         except Exception:
