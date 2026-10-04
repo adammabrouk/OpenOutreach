@@ -33,43 +33,25 @@ class Lead(models.Model):
     # ------------------------------------------------------------------
 
     def get_profile(self, session) -> dict | None:
-        """Live Voyager scrape of the parsed profile dict.
+        """Live scrape of the parsed profile dict from the phone.
 
-        No DB caching: the heavy fields (raw JSON, names, company) live
-        only in memory for as long as the caller holds the dict. We do
-        opportunistically populate ``self.urn`` if it's still null and
-        the scrape returns one.
+        Opens the profile by slug (deep link) and reads its fields off the
+        Android UI. No DB caching: the fields live only in memory for as long as
+        the caller holds the dict. ``urn`` is not populated — the mobile app
+        never exposes it, and nothing downstream needs it any more.
         """
-        from linkedin_cli.api.client import PlaywrightLinkedinAPI
-        from linkedin_cli.exceptions import ProfileInaccessibleError
+        from linkedin_appium.actions.profile import open_profile, read_full_profile
+        from linkedin_appium.exceptions import ProfileInaccessibleError
 
-        session.ensure_browser()
-        api = PlaywrightLinkedinAPI(session=session)
+        driver = session.ensure_driver()
         try:
-            profile, _raw = api.get_profile(public_identifier=self.public_identifier)
+            open_profile(driver, self.public_identifier)
+            profile = read_full_profile(driver, self.public_identifier)
         except ProfileInaccessibleError:
             return None
-        if not profile:
+        if not profile or not profile.get("name"):
             return None
-
-        urn = profile.get("urn") or None
-        if urn and self.urn != urn:
-            if Lead.objects.filter(urn=urn).exclude(pk=self.pk).exists():
-                logger.warning("URN %s already owned by another lead — skipping for %s", urn, self.public_identifier)
-            else:
-                self.urn = urn
-                self.save(update_fields=["urn"])
-
         return profile
-
-    def get_urn(self, session) -> str:
-        """LinkedIn URN. Reads cached column; falls back to a live scrape."""
-        if self.urn:
-            return self.urn
-        self.get_profile(session)  # sets self.urn as side-effect
-        if self.urn:
-            return self.urn
-        raise ValueError(f"Lead {self.pk}: could not resolve URN after re-fetch")
 
     def get_embedding(self, session) -> np.ndarray | None:
         """384-dim embedding. Lazy: scrapes + embeds on first access."""
@@ -129,7 +111,7 @@ class Lead(models.Model):
         """
         from crm.models import Outcome
         from crm.models.deal import Deal
-        from linkedin_cli.enums import ProfileState
+        from linkedin_appium.enums import ProfileState
 
         deals = Deal.objects.filter(
             campaign=campaign, lead_id__isnull=False,

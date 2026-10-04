@@ -8,7 +8,7 @@ from datetime import timedelta
 from django.utils import timezone
 from termcolor import colored
 
-from linkedin_cli.enums import ProfileState
+from linkedin_appium.enums import ProfileState
 from linkedin.models import ActionLog
 
 logger = logging.getLogger(__name__)
@@ -16,15 +16,6 @@ logger = logging.getLogger(__name__)
 # Required silence between nudges scales with unanswered count:
 # 1 unanswered → 3d, 2 → 6d, 3 → 9d. Skips the LLM call while open.
 MIN_DAYS_PER_UNANSWERED = 3
-
-
-def _build_send_profile(deal) -> dict:
-    """Minimal profile dict for ``send_raw_message`` and its fallbacks."""
-    lead = deal.lead
-    return {
-        "public_identifier": lead.public_identifier,
-        "urn": lead.urn or "",
-    }
 
 
 def _too_soon_to_nudge(deal) -> bool:
@@ -69,7 +60,8 @@ def _next_followup_deal(campaign):
 
 
 def handle_follow_up(task, session, qualifiers):
-    from linkedin_cli.actions.message import send_raw_message
+    from linkedin_appium.actions.thread import open_thread
+    from linkedin_appium.actions.message import send_message
     from linkedin.agents.follow_up import run_follow_up_agent
     from linkedin.db.deals import set_profile_state
     from linkedin.db.summaries import materialize_profile_summary_if_missing
@@ -94,11 +86,11 @@ def handle_follow_up(task, session, qualifiers):
     materialize_profile_summary_if_missing(deal, session)
     decision = run_follow_up_agent(session, deal)
 
-    profile = _build_send_profile(deal)
-
     if decision.action == "send_message":
         logger.info("[%s] follow_up message for %s: %s", campaign, public_id, decision.message)
-        sent = send_raw_message(session, profile, decision.message)
+        driver = session.ensure_driver()
+        open_thread(driver, public_id)
+        sent = send_message(driver, decision.message)
         if not sent:
             set_profile_state(session, public_id, ProfileState.QUALIFIED.value)
             logger.warning("follow_up for %s: send failed — moving to QUALIFIED for re-connection", public_id)

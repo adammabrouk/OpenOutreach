@@ -9,7 +9,7 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from django.utils import timezone
-from linkedin_cli.exceptions import AuthenticationError, CheckpointChallengeError
+from linkedin_appium.exceptions import AuthenticationError, CheckpointChallengeError
 from pydantic_ai.exceptions import ModelHTTPError
 from termcolor import colored
 

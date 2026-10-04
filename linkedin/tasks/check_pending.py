@@ -14,8 +14,8 @@ from django.utils import timezone
 from termcolor import colored
 
 from linkedin.db.deals import set_profile_state
-from linkedin_cli.enums import ProfileState
-from linkedin_cli.exceptions import SkipProfile
+from linkedin_appium.enums import ProfileState
+from linkedin_appium.exceptions import SkipProfile
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,9 @@ def _double_backoff(deal) -> float:
 
 
 def handle_check_pending(task, session, qualifiers):
-    from linkedin_cli.actions.status import get_connection_status
+    from linkedin_appium.actions.status import read_status
+    from linkedin_appium.actions.profile import open_profile
+    from linkedin_appium.enums import ConnectionStatus, to_profile_state
 
     campaign = session.campaign
     deal = _next_due_pending_deal(campaign)
@@ -58,21 +60,21 @@ def handle_check_pending(task, session, qualifiers):
         campaign, colored("▶ check_pending", "magenta", attrs=["bold"]), public_id,
     )
 
-    profile = deal.lead.to_profile_dict()
-    profile_for_status = profile.get("profile") or profile
+    driver = session.ensure_driver()
 
     try:
-        new_state = get_connection_status(session, profile_for_status)
+        open_profile(driver, public_id)
+        status = read_status(driver)
     except SkipProfile as e:
         logger.warning("Skipping %s: %s", public_id, e)
         set_profile_state(session, public_id, ProfileState.FAILED.value)
         return
 
-    if new_state == ProfileState.PENDING:
+    if status == ConnectionStatus.PENDING:
         # Still pending — double the backoff before set_profile_state so the
         # state hook re-stamps next_check_pending_at with the doubled value.
         old = deal.backoff_hours or 0
         new = _double_backoff(deal)
         logger.info("%s still pending — backoff %.1fh → %.1fh", public_id, old, new)
 
-    set_profile_state(session, public_id, new_state.value)
+    set_profile_state(session, public_id, to_profile_state(status).value)

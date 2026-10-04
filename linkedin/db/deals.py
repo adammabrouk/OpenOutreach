@@ -3,7 +3,7 @@ import logging
 from django.db import transaction
 from termcolor import colored
 
-from linkedin_cli.enums import ProfileState
+from linkedin_appium.enums import ProfileState
 
 logger = logging.getLogger(__name__)
 

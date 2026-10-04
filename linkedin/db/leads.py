@@ -5,8 +5,8 @@ from typing import Dict, Any, Optional
 
 from django.db import transaction
 
-from linkedin_cli.url_utils import url_to_public_id, public_id_to_url
-from linkedin_cli.enums import ProfileState
+from linkedin_appium.url_utils import url_to_public_id, public_id_to_url
+from linkedin_appium.enums import ProfileState
 
 logger = logging.getLogger(__name__)
 
@@ -121,53 +121,58 @@ def disqualify_lead(public_id: str):
     lead.save(update_fields=["disqualified"])
 
 
-def discover_and_enrich(session, urls):
-    """For each new URL, call Voyager API, create enriched Lead (with embedding).
+def discover_and_enrich(session, hits):
+    """For each search hit, open the profile, resolve its slug, create a Lead.
 
-    Skips URLs that already have a Lead, caps at enrich_max_per_page (DOM
-    order — LinkedIn's own relevance), and pauses a human-ish
-    [enrich_min_delay_seconds, enrich_max_delay_seconds] between scrapes.
+    Mobile search rows carry no vanity slug, so each hit must be opened to
+    resolve identity (via More → Contact info) and read its fields. Caps at
+    enrich_max_per_page (LinkedIn's own relevance order) and pauses a human-ish
+    [enrich_min_delay_seconds, enrich_max_delay_seconds] between profiles.
+
+    TODO(phone-validate): the per-hit navigation (tap row → resolve slug →
+    return to results) and the profile richness that feeds the embedding still
+    need an on-device pass — see ``read_full_profile``.
     """
-    from linkedin_cli.api.client import PlaywrightLinkedinAPI
+    from linkedin_appium.actions.search import open_hit, back_to_results
+    from linkedin_appium.actions.profile import read_full_profile, resolve_public_identifier
     from linkedin.conf import CAMPAIGN_CONFIG
 
-    new_urls = [u for u in urls if not lead_exists(u)]
-    if not new_urls:
+    if not hits:
         return
 
     max_per_page = CAMPAIGN_CONFIG["enrich_max_per_page"]
-    if len(new_urls) > max_per_page:
-        new_urls = new_urls[:max_per_page]
+    hits = hits[:max_per_page]
 
-    logger.info("Discovered %d new profiles (%d total on page)", len(new_urls), len(urls))
+    logger.info("Discovered %d candidate hit(s) to enrich", len(hits))
 
     min_delay = CAMPAIGN_CONFIG["enrich_min_delay_seconds"]
     max_delay = CAMPAIGN_CONFIG["enrich_max_delay_seconds"]
-    session.ensure_browser()
-    api = PlaywrightLinkedinAPI(session=session)
+    driver = session.ensure_driver()
     enriched = 0
 
-    for url in new_urls:
-        public_id = url_to_public_id(url)
-        if not public_id:
+    for hit in hits:
+        if not open_hit(driver, hit):
             continue
 
         try:
-            profile, _raw = api.get_profile(profile_url=url)
+            profile = read_full_profile(driver)          # header fields (main profile)
+            slug = resolve_public_identifier(driver)     # navigates to the contact sheet
+            driver.back()                                # contact sheet → profile
+
+            if not slug:
+                logger.warning("No slug resolved for %r — skipping", hit.name)
+            else:
+                url = public_id_to_url(slug)
+                profile["public_identifier"] = slug
+                if not lead_exists(url) and create_enriched_lead(session, url, profile) is not None:
+                    enriched += 1
         except Exception:
-            logger.warning("Voyager API failed for %s — skipping", url)
-            continue
+            logger.warning("Enrich failed for %r — skipping", hit.name)
 
-        if not profile:
-            logger.warning("Empty profile for %s — skipping", url)
-            continue
-
-        if create_enriched_lead(session, url, profile) is not None:
-            enriched += 1
-
+        back_to_results(driver)
         time.sleep(random.uniform(min_delay, max_delay))
 
-    logger.info("Enriched %d/%d new profiles", enriched, len(new_urls))
+    logger.info("Enriched %d/%d new profiles", enriched, len(hits))
 
 
 def _cache_urn_from_profile(lead, profile: Dict[str, Any]):
@@ -185,13 +190,18 @@ def _cache_urn_from_profile(lead, profile: Dict[str, Any]):
 def register_self_lead(session, profile: Dict[str, Any]):
     """Persist the logged-in member's own profile as a disqualified Lead.
 
-    The CRM-side layer over ``linkedin_cli``'s self-discovery primitive: marks
-    the real profile disqualified (so auto-discovery never targets it) and links
-    it as ``linkedin_profile.self_lead``. Idempotent per profile.
+    The CRM-side layer over the self-discovery primitive: marks the real profile
+    disqualified (so auto-discovery never targets it) and links it as
+    ``linkedin_profile.self_lead``. Idempotent per profile. On mobile the own
+    slug is best-effort — with no slug there's nothing to key the self-Lead on,
+    so we skip (the only cost is losing the self-exclusion dedup, an unlikely edge).
     """
     from crm.models import Lead
 
-    public_id = profile["public_identifier"]
+    public_id = profile.get("public_identifier") or ""
+    if not public_id:
+        logger.warning("register_self_lead: no self slug available — skipping self-Lead")
+        return
     lead, _ = Lead.objects.update_or_create(
         public_identifier=public_id,
         defaults={"linkedin_url": public_id_to_url(public_id), "disqualified": True},

@@ -15,14 +15,14 @@ def _get_lead_and_ct(public_identifier: str):
 
 
 def sync_conversation(session, public_identifier: str) -> list[dict]:
-    """Fetch messages from Voyager API and upsert into ChatMessage.
+    """Read the phone conversation thread and upsert into ChatMessage.
 
     Returns messages as a list of {sender, text, timestamp, is_outgoing} dicts
     from the DB (always the source of truth after sync). Newly-synced messages
     are also folded into the campaign Deal's `chat_summary` (mem0-style facts).
     """
     lead, ct = _get_lead_and_ct(public_identifier)
-    new_messages = _sync_from_api(session, public_identifier, lead, ct)
+    new_messages = _sync_from_thread(session, public_identifier, lead, ct)
     _update_deal_chat_summary(session, lead, new_messages)
 
     return _read_from_db(public_identifier)
@@ -41,67 +41,61 @@ def _update_deal_chat_summary(session, lead, new_messages):
     update_chat_summary(deal, new_messages, seller_name=seller_name_from(session))
 
 
-def _sync_from_api(session, public_identifier: str, lead, ct) -> list:
-    """Fetch messages from Voyager API and upsert into DB.
+def _synthetic_urn(public_identifier: str, is_outgoing: bool, text: str) -> str:
+    """Deterministic dedup key for a mobile message (no Voyager entityUrn).
+
+    The Android app exposes no per-message id, so we synthesize a stable one from
+    the lead + direction + a content hash. Re-syncing the same message yields the
+    same key, keeping upserts idempotent; two identical messages in the same
+    direction to the same lead collapse to one row (acceptable).
+    """
+    import hashlib
+
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+    return f"appium:{public_identifier}:{'out' if is_outgoing else 'in'}:{digest}"
+
+
+def _sync_from_thread(session, public_identifier: str, lead, ct) -> list:
+    """Read the phone conversation thread and upsert into DB.
 
     Returns the list of newly-created ``ChatMessage`` rows (in arrival order),
     so callers can incrementally update derived caches like ``chat_summary``.
     """
     from chat.models import ChatMessage
-    from linkedin_cli.actions.conversations import (
-        find_conversation_urn, find_conversation_urn_via_navigation, parse_message_element,
-    )
-    from linkedin_cli.api.client import PlaywrightLinkedinAPI
-    from linkedin_cli.api.messaging import fetch_messages
+    from linkedin_appium.actions.thread import open_thread, read_thread
 
-    session.ensure_browser()
-    api = PlaywrightLinkedinAPI(session=session)
+    driver = session.ensure_driver()
+    self_name = session.self_profile.get("name") or ""
 
-    target_urn = lead.get_urn(session)
-    mailbox_urn = session.self_profile["urn"]
-
-    # Find conversation URN
-    conversation_urn = find_conversation_urn(api, target_urn, mailbox_urn)
-    if not conversation_urn:
-        conversation_urn = find_conversation_urn_via_navigation(session, target_urn)
-    if not conversation_urn:
-        logger.debug("sync: no conversation found for %s", public_identifier)
+    open_thread(driver, public_identifier)
+    messages = read_thread(driver, self_name)
+    if not messages:
+        logger.debug("sync: no messages found for %s", public_identifier)
         return []
 
-    # Fetch messages
-    raw = fetch_messages(api, conversation_urn)
-    elements = raw.get("data", {}).get("messengerMessagesBySyncToken", {}).get("elements", [])
-
-    self_urn = session.self_profile["urn"]
     new_messages: list = []
-
-    for msg in elements:
-        parsed = parse_message_element(msg)
-        if not parsed or not parsed["entityUrn"]:
+    for m in messages:
+        if not m.text:
             continue
-
-        is_outgoing = parsed["sender_host_urn"] == self_urn
-
-        # Upsert by linkedin_urn
-        obj, created = ChatMessage.objects.update_or_create(
-            linkedin_urn=parsed["entityUrn"],
+        urn = _synthetic_urn(public_identifier, m.is_outgoing, m.text)
+        obj, created = ChatMessage.objects.get_or_create(
+            linkedin_urn=urn,
             defaults={
                 "content_type": ct,
                 "object_id": lead.pk,
-                "content": parsed["text"],
-                "is_outgoing": is_outgoing,
+                "content": m.text,
+                "is_outgoing": m.is_outgoing,
                 "owner": session.django_user,
-                **({"creation_date": parsed["delivered_at"]} if parsed["delivered_at"] else {}),
             },
         )
         if created:
             new_messages.append(obj)
-            logger.debug("sync: new message from %s for %s", parsed["sender_name"], public_identifier)
+            logger.debug("sync: new %s message for %s",
+                         "outgoing" if m.is_outgoing else "incoming", public_identifier)
 
-    # Sort new messages chronologically so the LLM sees them in order.
     new_messages.sort(key=lambda m: m.creation_date or m.pk)
     logger.debug("sync: processed %d messages for %s (%d new)",
-                 len(elements), public_identifier, len(new_messages))
+                 len(messages), public_identifier, len(new_messages))
     return new_messages
 
 
