@@ -20,8 +20,8 @@ FASTEMBED_CACHE_DIR = ROOT_DIR / ".cache" / "fastembed"
 MIN_DELAY = 5
 MAX_DELAY = 8
 
-# Browser timing/launch knobs and fixture paths now live in
-# linkedin_cli/conf.py (the Django-free interaction layer).
+# Appium driver knobs (server URL, app package, human-typing rhythm) live in
+# linkedin_appium/driver.py (the phone-automation layer).
 
 # ----------------------------------------------------------------------
 # Onboarding defaults (shown to user during interactive setup)

@@ -1,5 +1,4 @@
-playwright>=1.59
-playwright-stealth
+Appium-Python-Client>=4
 pydantic
 pydantic-ai-slim[openai,anthropic,google,groq,mistral,cohere,bedrock]
 # pydantic-ai 1.96 imports `from griffe import ...`, but griffe 2.x split into an
@@ -16,4 +15,3 @@ fastembed
 scikit-learn
 huggingface_hub
 questionary
-linkedin-agent-cli

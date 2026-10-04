@@ -2,7 +2,7 @@ from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
-from linkedin_cli.enums import ProfileState
+from linkedin_appium.enums import ProfileState
 
 
 class Outcome(models.TextChoices):

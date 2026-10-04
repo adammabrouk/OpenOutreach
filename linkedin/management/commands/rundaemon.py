@@ -15,7 +15,6 @@ class Command(BaseCommand):
         self._ensure_db()
         self._ensure_onboarded()
         session = self._create_session()
-        self._ensure_newsletter(session)
 
         from linkedin.daemon import run_daemon
         run_daemon(session)
@@ -76,19 +75,3 @@ class Command(BaseCommand):
         session.campaign = campaign
 
         return session
-
-    def _ensure_newsletter(self, session):
-        if session.linkedin_profile.newsletter_processed:
-            return
-
-        from linkedin.api.newsletter import ensure_newsletter_subscription
-        from linkedin.setup.gdpr import apply_gdpr_newsletter_override
-        from linkedin_cli.url_utils import public_id_to_url
-
-        profile = session.self_profile
-        country_code = profile.get("country_code")
-        apply_gdpr_newsletter_override(session, country_code)
-        linkedin_url = public_id_to_url(profile["public_identifier"])
-        ensure_newsletter_subscription(session, linkedin_url=linkedin_url)
-        session.linkedin_profile.newsletter_processed = True
-        session.linkedin_profile.save(update_fields=["newsletter_processed"])

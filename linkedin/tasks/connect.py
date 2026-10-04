@@ -16,8 +16,8 @@ from termcolor import colored
 from linkedin.db.deals import increment_connect_attempts, set_profile_state
 from linkedin.db.leads import disqualify_lead
 from linkedin.models import ActionLog
-from linkedin_cli.enums import ProfileState
-from linkedin_cli.exceptions import ProfileInaccessibleError, ReachedConnectionLimit, SkipProfile
+from linkedin_appium.enums import ProfileState
+from linkedin_appium.exceptions import ProfileInaccessibleError, ReachedConnectionLimit, SkipProfile
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +55,11 @@ def strategy_for(campaign, qualifiers):
 
 
 def handle_connect(task, session, qualifiers):
-    from linkedin_cli.actions.connect import send_connection_request
-    from linkedin_cli.actions.status import get_connection_status
+    from linkedin_appium.actions.connect import send_connection_request
+    from linkedin_appium.actions.status import read_status
+    from linkedin_appium.actions.profile import open_profile
+    from linkedin_appium.enums import ConnectionStatus
+    from linkedin_appium.exceptions import NoConnectButton
 
     campaign = session.campaign
     strategy = strategy_for(campaign, qualifiers)
@@ -71,7 +74,6 @@ def handle_connect(task, session, qualifiers):
         return
 
     public_id = candidate["public_identifier"]
-    profile = candidate.get("profile") or candidate
 
     # Freemium campaigns need a Deal before set_profile_state
     if strategy.pre_connect:
@@ -88,20 +90,28 @@ def handle_connect(task, session, qualifiers):
     logger.info("[%s] %s", campaign, colored("▶ connect", "cyan", attrs=["bold"]))
     logger.info("[%s] %s (%s) — %s", campaign, public_id, stats, reason or "")
 
-    try:
-        status = get_connection_status(session, profile)
+    driver = session.ensure_driver()
 
-        if status in (ProfileState.CONNECTED, ProfileState.PENDING):
+    try:
+        open_profile(driver, public_id)
+        status = read_status(driver)
+
+        if status in (ConnectionStatus.CONNECTED, ConnectionStatus.PENDING):
             # set_profile_state fires on_deal_state_entered, which stamps
             # next_check_pending_at on PENDING and no-ops on CONNECTED.
-            set_profile_state(session, public_id, status.value)
+            state = ProfileState.CONNECTED if status == ConnectionStatus.CONNECTED else ProfileState.PENDING
+            set_profile_state(session, public_id, state.value)
             return
 
-        # get_connection_status already navigated to the profile page
-        new_state = send_connection_request(session=session, profile=profile)
-
-        if new_state == ProfileState.QUALIFIED:
-            # No Connect button found — track attempt, disqualify after MAX_CONNECT_ATTEMPTS
+        # Not connected — the profile is already open, so send the invite.
+        try:
+            send_connection_request(driver)  # returns PENDING or raises
+            set_profile_state(session, public_id, ProfileState.PENDING.value)
+            session.linkedin_profile.record_action(
+                ActionLog.ActionType.CONNECT, session.campaign,
+            )
+        except NoConnectButton:
+            # No invite affordance — track attempt, disqualify after the cap.
             attempts = increment_connect_attempts(session, public_id)
             if attempts >= MAX_CONNECT_ATTEMPTS:
                 reason = f"Unreachable: no Connect button after {attempts} attempts"
@@ -109,13 +119,8 @@ def handle_connect(task, session, qualifiers):
                 set_profile_state(session, public_id, ProfileState.FAILED.value, reason=reason)
                 logger.warning("Disqualified %s — %s", public_id, reason)
             else:
-                set_profile_state(session, public_id, new_state.value)
+                set_profile_state(session, public_id, ProfileState.QUALIFIED.value)
                 logger.debug("%s: connect attempt %d/%d — no button found", public_id, attempts, MAX_CONNECT_ATTEMPTS)
-        else:
-            set_profile_state(session, public_id, new_state.value)
-            session.linkedin_profile.record_action(
-                ActionLog.ActionType.CONNECT, session.campaign,
-            )
 
     except ReachedConnectionLimit as e:
         logger.warning("Rate limited: %s", e)

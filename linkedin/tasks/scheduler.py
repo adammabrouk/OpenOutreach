@@ -37,7 +37,7 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from django.utils import timezone
-from linkedin_cli.enums import ProfileState
+from linkedin_appium.enums import ProfileState
 
 from linkedin.conf import (
     ACTIVE_END_HOUR,

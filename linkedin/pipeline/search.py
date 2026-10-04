@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 def run_search(session) -> str | None:
     """Use the next search keyword to discover new profiles. Returns keyword or None."""
-    from linkedin_cli.actions.search import search_people
+    from linkedin_appium.actions.search import search_people
     from linkedin.db.leads import discover_and_enrich
     from linkedin.pipeline.search_keywords import generate_search_keywords
     from linkedin.models import SearchKeyword
@@ -49,6 +49,6 @@ def run_search(session) -> str | None:
     kw.save()
 
     logger.info(colored("\u25b6 search", "magenta", attrs=["bold"]) + " keyword=%r", kw.keyword)
-    urls = [p["url"] for p in search_people(session, kw.keyword)["profiles"]]
-    discover_and_enrich(session, urls)
+    hits = search_people(session.ensure_driver(), kw.keyword)
+    discover_and_enrich(session, hits)
     return kw.keyword
