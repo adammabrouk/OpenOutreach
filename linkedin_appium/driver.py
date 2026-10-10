@@ -140,15 +140,18 @@ def ensure_feed(driver, max_back: int = 6):
 
 
 def human_type(element, text: str) -> None:
-    """Type *text* into *element* one character at a time with human jitter.
+    """Type *text* into *element* with an organic cadence, one glyph at a time.
 
-    Sends keystrokes individually so LinkedIn sees an organic typing cadence
-    rather than a single instantaneous field set. Falls back to nothing special
-    for whitespace — the pacing alone reads naturally.
+    UiAutomator2's ``send_keys`` *replaces* the field (setText), not appends, so
+    sending single characters renders as type-B, replace-with-I, replace-with-L —
+    a flickering mess that also fires the search typeahead on garbage. We instead
+    send the growing prefix each step (``B``, ``Bi``, ``Bil``, …), which the same
+    replace semantics turn into clean incremental typing, with the sampled pause
+    between keystrokes still visible.
     """
     time.sleep(random.uniform(HUMAN_TYPE_PAUSE_MIN, HUMAN_TYPE_PAUSE_MAX))
-    for ch in text:
-        element.send_keys(ch)
+    for i in range(1, len(text) + 1):
+        element.send_keys(text[:i])
         time.sleep(random.uniform(HUMAN_TYPE_MIN, HUMAN_TYPE_MAX))
         if random.random() < HUMAN_TYPE_PAUSE_CHANCE:
             time.sleep(random.uniform(HUMAN_TYPE_PAUSE_MIN, HUMAN_TYPE_PAUSE_MAX))

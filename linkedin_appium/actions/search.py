@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from xml.etree import ElementTree as ET
 
 from appium.webdriver.common.appiumby import AppiumBy
+from selenium.common.exceptions import WebDriverException
 
 from linkedin_appium.driver import find_first, ensure_feed, human_type
 
@@ -93,8 +94,12 @@ def _parse_people(page_source: str) -> list[SearchHit]:
     return hits
 
 
-def search_people(driver, query: str) -> list[SearchHit]:
-    """Run a People search for *query* and return the visible result rows."""
+def search_people(driver, query: str, humanizer=None) -> list[SearchHit]:
+    """Run a People search for *query* and return the visible result rows.
+
+    With a ``search``-bound humanizer, the query is typed at the operator's
+    recorded cadence; otherwise the default-paced ``human_type`` is used.
+    """
     ensure_feed(driver)
 
     logger.info("search: opening search for %r", query)
@@ -111,8 +116,28 @@ def search_people(driver, query: str) -> list[SearchHit]:
         'new UiSelector().className("android.widget.EditText")',
     ])
     field.click()
-    human_type(field, query)
+    time.sleep(0.4)
+    # Clear any residual text, then type with human cadence. We read the field
+    # back afterwards and retype cleanly if it doesn't match, so a typeahead
+    # hiccup can't send us to — and connect us with — the wrong person.
+    try:
+        field.clear()
+    except WebDriverException:
+        pass
+    if humanizer is not None:
+        humanizer.type(field, query)
+    else:
+        human_type(field, query)
     time.sleep(0.5)
+    typed = field.get_attribute("text") or ""
+    if query.lower() not in typed.lower():
+        logger.warning("search: field shows %r after typing %r — retyping cleanly", typed, query)
+        try:
+            field.clear()
+        except WebDriverException:
+            pass
+        field.send_keys(query)
+        time.sleep(0.5)
     driver.press_keycode(66)  # IME search / enter
     time.sleep(2.5)
 

@@ -62,21 +62,33 @@ def _try_click(driver, selectors, timeout: float = 4.0) -> bool:
     return False
 
 
-def send_connection_request(driver) -> ConnectionStatus:
+def send_connection_request(driver, humanizer=None) -> ConnectionStatus:
     """Send an invite from the open profile; return the resulting status.
 
     Raises ``NoConnectButton`` if there's no invite affordance (already
     connected/pending, or a restricted profile) and ``ReachedConnectionLimit``
     when LinkedIn blocks the invite with its weekly-limit sheet.
+
+    When a :class:`~linkedin_appium.behavior.humanizer.Humanizer` is passed, taps
+    go through it (sampled press dwell + jitter) and the waits between steps are
+    sampled reading beats instead of fixed sleeps — so the invite carries the
+    recorded operator's ``connect`` signature. Without one, the fixed-timing
+    fallback keeps the primitive usable on its own.
     """
-    if not _try_click(driver, _INVITE_BUTTON):
+    tap = humanizer.tap_selectors if humanizer else (
+        lambda sels, timeout=4.0: _try_click(driver, sels, timeout))
+
+    def pause(default: float) -> None:
+        humanizer.dwell() if humanizer else time.sleep(default)
+
+    if not tap(_INVITE_BUTTON):
         raise NoConnectButton("no invite affordance on this profile")
-    time.sleep(1.5)
+    pause(1.5)
 
     # A confirmation sheet is common but not universal; if the invite fired
     # directly, the send button simply won't be there.
-    _try_click(driver, _SEND_BUTTON, timeout=3.0)
-    time.sleep(2.0)
+    tap(_SEND_BUTTON, timeout=3.0)
+    pause(2.0)
 
     if any(m in driver.page_source for m in _LIMIT_MARKERS):
         raise ReachedConnectionLimit("weekly invitation limit reached")
